@@ -11,8 +11,8 @@ fn cfg_macos() {
 
 #[allow(dead_code)]
 fn cfg_linux_x86() {
-    println!("cargo:rustc-link-lib=static=pdfium");
-    println!("cargo:rustc-link-search=native=./libs/pdfium-linux-static");
+    println!("cargo:rustc-link-lib=dylib=pdfium");
+    println!("cargo:rustc-link-lib=dylib=stdc++");
 }
 fn main() {
     #[cfg(target_os = "macos")]
