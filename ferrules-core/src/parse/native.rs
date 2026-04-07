@@ -297,9 +297,7 @@ fn handle_parse_native_req(
 }
 
 pub fn start_native_parser(mut input_rx: Receiver<(ParseNativeRequest, Span)>) {
-    let pdfium = Pdfium::new(
-        Pdfium::bind_to_statically_linked_library().expect("can't load pdfiurm bindings"),
-    );
+    let pdfium = Pdfium::default();
     while let Some((req, parent_span)) = input_rx.blocking_recv() {
         let queue_duration = req.queue_time.elapsed();
         tracing::debug!(parent: &parent_span, "Native request dequeued after {:?} in queue", queue_duration);

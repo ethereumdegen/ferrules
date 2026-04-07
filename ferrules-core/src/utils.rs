@@ -22,7 +22,7 @@ pub fn get_doc_length<P: AsRef<Path>>(
     page_range: Option<Range<usize>>,
 ) -> anyhow::Result<usize> {
     // TODO : This panic ! should be handlered
-    let pdfium = Pdfium::new(Pdfium::bind_to_statically_linked_library().unwrap());
+    let pdfium = Pdfium::default();
     let document = pdfium.load_pdf_from_file(&path, password).unwrap();
     let pages: Vec<_> = document.pages().iter().enumerate().collect();
     match page_range {

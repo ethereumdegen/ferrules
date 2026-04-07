@@ -25,11 +25,7 @@ metrics = { workspace = true, optional = true }
 # pdf reader
 imageproc = "0.25.0"
 ab_glyph = "0.2.29"
-pdfium-render = { version = "0.8.27", features = [
-    "static",
-    "bindings",
-    "sync",
-] }
+pdfium-render = { version = "0.8.27", features = ["sync"] }
 # Inference
 image = "0.25.5"
 ndarray = "0.17"
