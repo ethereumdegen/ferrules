@@ -32,9 +32,9 @@ pdfium-render = { version = "0.8.27", features = [
 ] }
 # Inference
 image = "0.25.5"
-ndarray = "0.16.1"
+ndarray = "0.17"
 plsfix = "0.1.7"
-ort = { version = "=2.0.0-rc.9", features = ["fetch-models"] }
+ort = { version = "=2.0.0-rc.12", features = ["download-binaries"] }
 serde_millis = "0.1.1"
 rand = "0.8.5"
 # Rendering
@@ -47,7 +47,7 @@ default = []
 metrics = ["dep:metrics"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "=2.0.0-rc.9", features = ["coreml", "fetch-models", "half"] }
+ort = { version = "=2.0.0-rc.12", features = ["coreml", "download-binaries", "half"] }
 objc2 = { version = "^0.5.2" }
 objc2-foundation = { version = "^0.2.2" }
 objc2-vision = { version = "^0.2.2", features = [
@@ -60,8 +60,8 @@ objc2-vision = { version = "^0.2.2", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ort = { version = "=2.0.0-rc.9", features = [
-    "fetch-models",
+ort = { version = "=2.0.0-rc.12", features = [
+    "download-binaries",
     "half",
     "cuda",
     "tensorrt",

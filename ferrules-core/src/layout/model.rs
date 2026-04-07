@@ -7,7 +7,8 @@ use ort::{
         CPUExecutionProvider, CUDAExecutionProvider, CoreMLExecutionProvider,
         TensorRTExecutionProvider,
     },
-    session::{builder::GraphOptimizationLevel, Session},
+    session::{builder::GraphOptimizationLevel, RunOptions, Session},
+    value::Tensor,
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use std::sync::Mutex;
@@ -134,7 +135,7 @@ impl LayoutBBox {
 
 #[derive(Debug)]
 pub struct ORTLayoutParser {
-    session: Session,
+    session: tokio::sync::Mutex<Session>,
     output_name: String,
     pub config: ORTConfig,
     buffer_pool: Mutex<Vec<Array4<f32>>>,
@@ -162,14 +163,16 @@ impl ORTLayoutParser {
         &self,
         input: &Array4<f32>,
     ) -> anyhow::Result<ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>> {
-        let outputs = &self.session.run_async(ort::inputs![input.view()]?)?.await?;
+        let input_tensor = Tensor::from_array(input.to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let run_opts = RunOptions::new().expect("RunOptions");
+        let mut session = self.session.lock().await;
+        let outputs = session.run_async(ort::inputs![input_tensor], &run_opts).map_err(|e| anyhow::anyhow!("{e}"))?.await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let output_tensor = outputs
             .get(&self.output_name)
             .context("can't get the value of first output")?
-            .try_extract_tensor::<f32>()?;
-
-        let output_tensor = output_tensor
+            .try_extract_array::<f32>()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
             .to_shape(Self::OUTPUT_SIZE)
             .unwrap()
             .to_owned();
@@ -183,15 +186,16 @@ impl ORTLayoutParser {
         input: Array4<f32>,
     ) -> anyhow::Result<ndarray::Array3<f32>> {
         let batch_size = input.dim().0;
-        let outputs = &self.session.run_async(ort::inputs![input]?)?.await?;
+        let input_tensor = Tensor::from_array(input).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let run_opts = RunOptions::new().expect("RunOptions");
+        let mut session = self.session.lock().await;
+        let outputs = session.run_async(ort::inputs![input_tensor], &run_opts).map_err(|e| anyhow::anyhow!("{e}"))?.await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let output_tensor = outputs
             .get(&self.output_name)
             .context("can't get the value of first output")?
-            .try_extract_tensor::<f32>()?;
-
-        // Adjust output shape to [batch_size, classes + bbox, candidate_boxes]
-        let output_tensor = output_tensor
+            .try_extract_array::<f32>()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
             .to_shape([batch_size, 15, 21504])
             .unwrap()
             .to_owned();
@@ -245,13 +249,13 @@ impl ORTLayoutParser {
                     );
                 }
                 OrtExecutionProvider::CoreML { ane_only } => {
-                    let provider = CoreMLExecutionProvider::default();
-                    let provider = if ane_only {
-                        provider.with_ane_only().build()
-                    } else {
-                        provider.build()
-                    };
-                    execution_providers.push(provider)
+                    let mut provider = CoreMLExecutionProvider::default();
+                    if ane_only {
+                        provider = provider.with_compute_units(
+                            ort::ep::coreml::ComputeUnits::CPUAndNeuralEngine,
+                        );
+                    }
+                    execution_providers.push(provider.build())
                 }
                 OrtExecutionProvider::CPU => {
                     execution_providers.push(CPUExecutionProvider::default().build());
@@ -266,27 +270,27 @@ impl ORTLayoutParser {
             None => GraphOptimizationLevel::Disable,
         };
 
-        let mut builder = Session::builder()?
-            .with_execution_providers(execution_providers)?
-            .with_optimization_level(opt_lvl)?
-            .with_intra_threads(config.intra_threads)?
-            .with_inter_threads(config.inter_threads)?;
+        let mut builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_execution_providers(execution_providers).map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_optimization_level(opt_lvl).map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_intra_threads(config.intra_threads).map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_inter_threads(config.inter_threads).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         if let Some(profile_path) = &config.profile_layout {
-            builder = builder.with_profiling(profile_path)?;
+            builder = builder.with_profiling(profile_path).map_err(|e| anyhow::anyhow!("{e}"))?;
         }
 
-        let session = builder.commit_from_memory(LAYOUT_MODEL_BYTES)?;
+        let session = builder.commit_from_memory(LAYOUT_MODEL_BYTES).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let output_name = session
-            .outputs
+            .outputs()
             .first()
-            .map(|i| &i.name)
+            .map(|i| i.name())
             .context("can't find name output input")?
             .to_owned();
 
         let parser = Self {
-            session,
+            session: tokio::sync::Mutex::new(session),
             output_name,
             config,
             // TODO: use ticket mutex instead of buffer pool to access resources
@@ -318,14 +322,15 @@ impl ORTLayoutParser {
         &self,
         input: &Array4<f32>,
     ) -> anyhow::Result<ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>> {
-        let outputs = &self.session.run(ort::inputs![input.view()]?)?;
+        let input_tensor = Tensor::from_array(input.to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut session = self.session.blocking_lock();
+        let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let output_tensor = outputs
             .get(&self.output_name)
             .context("can't get the value of first output")?
-            .try_extract_tensor::<f32>()?;
-
-        let output_tensor = output_tensor
+            .try_extract_array::<f32>()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
             .to_shape(Self::OUTPUT_SIZE)
             .unwrap()
             .to_owned();
@@ -336,14 +341,15 @@ impl ORTLayoutParser {
     #[tracing::instrument(skip_all)]
     pub fn run_batch(&self, input: Array4<f32>) -> anyhow::Result<ndarray::Array3<f32>> {
         let batch_size = input.dim().0;
-        let outputs = &self.session.run(ort::inputs![input]?)?;
+        let input_tensor = Tensor::from_array(input).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut session = self.session.blocking_lock();
+        let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let output_tensor = outputs
             .get(&self.output_name)
             .context("can't get the value of first output")?
-            .try_extract_tensor::<f32>()?;
-
-        let output_tensor = output_tensor
+            .try_extract_array::<f32>()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
             .to_shape([batch_size, 15, 21504])
             .unwrap()
             .to_owned();

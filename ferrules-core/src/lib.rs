@@ -77,7 +77,6 @@
 //! ## License
 //!
 //! Licensed under the GPLv3 license.
-#![feature(portable_simd)]
 #![recursion_limit = "256"]
 
 pub(crate) mod draw;

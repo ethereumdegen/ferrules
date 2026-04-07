@@ -9,7 +9,9 @@ use ort::execution_providers::{
     CPUExecutionProvider, CUDAExecutionProvider, CoreMLExecutionProvider, TensorRTExecutionProvider,
 };
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::RunOptions;
 use ort::session::Session;
+use ort::value::Tensor;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::Instrument;
@@ -38,7 +40,7 @@ struct InferenceRequest {
 }
 
 struct BatchInferenceRunner {
-    session: Arc<Session>,
+    session: Arc<tokio::sync::Mutex<Session>>,
     rx: mpsc::Receiver<InferenceRequest>,
     max_batch_size: usize,
     batch_timeout: Duration,
@@ -53,7 +55,7 @@ impl BatchInferenceRunner {
 
     fn new(session: Session, rx: mpsc::Receiver<InferenceRequest>, is_fp16: bool) -> Self {
         Self {
-            session: Arc::new(session),
+            session: Arc::new(tokio::sync::Mutex::new(session)),
             rx,
             max_batch_size: Self::MAX_BATCH_SIZE,
             batch_timeout: Self::BATCH_TIMEOUT,
@@ -144,30 +146,34 @@ impl BatchInferenceRunner {
 
             // 3. Run Inference (Async)
             let run_start = tokio::time::Instant::now();
-            let run_result = async {
+            let run_result: Result<(ArrayD<f32>, ArrayD<f32>), ort::Error> = async {
+                let run_opts = RunOptions::new().expect("RunOptions");
+                let mut session = self.session.lock().await;
                 if self.is_fp16 {
                     let input_f16 = batch_tensor.mapv(half::f16::from_f32);
-                    let outputs = self.session.run_async(ort::inputs![input_f16]?)?.await?;
+                    let input_tensor = Tensor::from_array(input_f16)?;
+                    let outputs = session.run_async(ort::inputs![input_tensor], &run_opts)?.await?;
                     let logits = outputs["logits"]
-                        .try_extract_tensor::<half::f16>()?
+                        .try_extract_array::<half::f16>()?
                         .mapv(|x| x.to_f32())
                         .into_dyn();
                     let boxes = outputs["pred_boxes"]
-                        .try_extract_tensor::<half::f16>()?
+                        .try_extract_array::<half::f16>()?
                         .mapv(|x| x.to_f32())
                         .into_dyn();
-                    Ok::<_, ort::Error>((logits, boxes))
+                    Ok((logits, boxes))
                 } else {
-                    let outputs = self.session.run_async(ort::inputs![batch_tensor]?)?.await?;
+                    let input_tensor = Tensor::from_array(batch_tensor)?;
+                    let outputs = session.run_async(ort::inputs![input_tensor], &run_opts)?.await?;
                     let logits = outputs["logits"]
-                        .try_extract_tensor::<f32>()?
+                        .try_extract_array::<f32>()?
                         .to_owned()
                         .into_dyn();
                     let boxes = outputs["pred_boxes"]
-                        .try_extract_tensor::<f32>()?
+                        .try_extract_array::<f32>()?
                         .to_owned()
                         .into_dyn();
-                    Ok::<_, ort::Error>((logits, boxes))
+                    Ok((logits, boxes))
                 }
             }
             .await;
@@ -260,13 +266,13 @@ impl TableTransformerStandard {
                     );
                 }
                 crate::layout::model::OrtExecutionProvider::CoreML { ane_only } => {
-                    let provider = CoreMLExecutionProvider::default();
-                    let provider = if ane_only {
-                        provider.with_ane_only().build()
-                    } else {
-                        provider.build()
-                    };
-                    execution_providers.push(provider)
+                    let mut provider = CoreMLExecutionProvider::default();
+                    if ane_only {
+                        provider = provider.with_compute_units(
+                            ort::ep::coreml::ComputeUnits::CPUAndNeuralEngine,
+                        );
+                    }
+                    execution_providers.push(provider.build())
                 }
                 crate::layout::model::OrtExecutionProvider::CPU => {
                     execution_providers.push(CPUExecutionProvider::default().build());
@@ -676,13 +682,13 @@ impl TableTransformer {
                     );
                 }
                 crate::layout::model::OrtExecutionProvider::CoreML { ane_only } => {
-                    let provider = CoreMLExecutionProvider::default();
-                    let provider = if ane_only {
-                        provider.with_ane_only().build()
-                    } else {
-                        provider.build()
-                    };
-                    execution_providers.push(provider)
+                    let mut provider = CoreMLExecutionProvider::default();
+                    if ane_only {
+                        provider = provider.with_compute_units(
+                            ort::ep::coreml::ComputeUnits::CPUAndNeuralEngine,
+                        );
+                    }
+                    execution_providers.push(provider.build())
                 }
                 crate::layout::model::OrtExecutionProvider::CPU => {
                     execution_providers.push(CPUExecutionProvider::default().build());
